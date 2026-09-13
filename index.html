@@ -814,10 +814,12 @@ body::before {
     <h3>API Key — Groq or Gemini</h3>
     <p>Paste a <strong>free Groq key</strong> (<code>console.groq.com/keys</code>, runs open-source Llama 3.3 70B) or a <strong>free Google Gemini key</strong> (<code>aistudio.google.com/apikey</code>). Both are free — just paste either one and we'll detect it automatically.</p>
     <input type="password" id="apiKeyInput" placeholder="gsk_... (Groq) or AIza.../AQ.Ab... (Gemini)" oninput="detectProvider()">
-    <div id="providerBadge" style="display:none;font-size:0.8rem;font-weight:600;padding:8px 12px;border-radius:6px;margin-bottom:16px;"></div>
+    <div id="providerBadge" style="display:none;font-size:0.8rem;font-weight:600;padding:8px 12px;border-radius:6px;margin-bottom:12px;"></div>
+    <div id="testResult" style="display:none;font-size:0.8rem;padding:10px 12px;border-radius:6px;margin-bottom:16px;line-height:1.5;"></div>
     <div class="modal-actions">
       <button class="btn-skip" onclick="closeApiKeyModal()">Cancel</button>
-      <button class="btn-save" onclick="saveApiKey()">Save Key</button>
+      <button class="btn-skip" id="testBtn" onclick="testApiKey()" style="background:var(--surface-elevated);color:var(--accent);border:1px solid rgba(88,166,255,0.3);">Test Key</button>
+      <button class="btn-save" onclick="saveApiKey()">Save & Start</button>
     </div>
   </div>
 </div>
@@ -1570,6 +1572,112 @@ function openApiKeyModal() {
 
 function closeApiKeyModal() {
   document.getElementById('apiKeyModal').classList.remove('active');
+}
+
+// Test the API key with a small real request
+async function testApiKey() {
+  const key = document.getElementById('apiKeyInput').value.trim();
+  const result = document.getElementById('testResult');
+  const testBtn = document.getElementById('testBtn');
+
+  if (!key) {
+    result.style.display = 'block';
+    result.style.background = 'rgba(248,81,73,0.12)';
+    result.style.color = '#f85149';
+    result.textContent = 'Please paste an API key first.';
+    return;
+  }
+
+  const provider = detectProviderInternal(key);
+  if (!provider) {
+    result.style.display = 'block';
+    result.style.background = 'rgba(248,81,73,0.12)';
+    result.style.color = '#f85149';
+    result.textContent = 'Unrecognized key format. Expected gsk_... (Groq) or AIza.../AQ.Ab... (Gemini).';
+    return;
+  }
+
+  // Show testing state
+  testBtn.disabled = true;
+  testBtn.textContent = 'Testing...';
+  result.style.display = 'block';
+  result.style.background = 'rgba(88,166,255,0.08)';
+  result.style.color = '#58a6ff';
+  result.textContent = 'Making a test API call...';
+
+  try {
+    let response;
+
+    if (provider === 'gemini') {
+      response = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=' + encodeURIComponent(key),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'Reply with exactly: OK' }] }],
+            generationConfig: { maxOutputTokens: 10 }
+          })
+        }
+      );
+    } else {
+      response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + key
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [{ role: 'user', content: 'Reply with exactly: OK' }],
+          max_tokens: 10
+        })
+      });
+    }
+
+    if (response.ok) {
+      result.style.background = 'rgba(63,185,80,0.12)';
+      result.style.color = '#3fb950';
+      result.textContent = '✓ API key works! ' + (provider === 'gemini' ? 'Gemini (AQ./AIza key accepted, Gemini 3.1 Flash-Lite responding)' : 'Groq (Llama 3.3 70B responding)') + '. Click Save & Start.';
+    } else {
+      const errText = await response.text();
+      let friendlyMsg = 'Test failed (HTTP ' + response.status + '). ';
+
+      try {
+        const errJson = JSON.parse(errText);
+        const apiMsg = errJson.error ? errJson.error.message : '';
+
+        if (response.status === 400 && apiMsg.includes('API key not valid')) {
+          friendlyMsg = '✗ Your API key is not valid. Make sure you copied the FULL key (no truncation, no extra spaces). For Gemini, create a fresh key at aistudio.google.com/apikey and copy the entire string.';
+        } else if (response.status === 429 && apiMsg.toLowerCase().includes('prepayment')) {
+          friendlyMsg = '✗ Your Gemini account needs prepaid credits. Google requires a small credit purchase for new accounts (created after March 2026) before the API works. Go to aistudio.google.com → Settings → Billing to add credits.';
+        } else if (response.status === 429) {
+          friendlyMsg = '✗ Rate limit or quota exceeded. Wait a minute and try again, or check your quota at aistudio.google.com.';
+        } else if (response.status === 403) {
+          friendlyMsg = '✗ Access denied (403). Your key may be restricted to a different API, or your Google account lacks access. Create a new key in AI Studio with default settings.';
+        } else if (response.status === 404) {
+          friendlyMsg = '✗ Model not found. The model may have been renamed — contact the app maintainer.';
+        } else if (apiMsg) {
+          friendlyMsg = '✗ ' + apiMsg;
+        } else {
+          friendlyMsg += errText.substring(0, 200);
+        }
+      } catch (e) {
+        friendlyMsg += errText.substring(0, 200);
+      }
+
+      result.style.background = 'rgba(248,81,73,0.12)';
+      result.style.color = '#f85149';
+      result.textContent = friendlyMsg;
+    }
+  } catch (e) {
+    result.style.background = 'rgba(248,81,73,0.12)';
+    result.style.color = '#f85149';
+    result.textContent = '✗ Network error: ' + e.message + '. Check your internet connection.';
+  }
+
+  testBtn.disabled = false;
+  testBtn.textContent = 'Test Key';
 }
 
 function saveApiKey() {
